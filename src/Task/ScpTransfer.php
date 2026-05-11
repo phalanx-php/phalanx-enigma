@@ -4,13 +4,15 @@ declare(strict_types=1);
 
 namespace Phalanx\Enigma\Task;
 
-use Phalanx\ExecutionScope;
 use Phalanx\Enigma\Exception\SshException;
 use Phalanx\Enigma\SshConfig;
 use Phalanx\Enigma\SshCredential;
 use Phalanx\Enigma\Support\ProcessAwaiter;
 use Phalanx\Enigma\TransferDirection;
 use Phalanx\Enigma\TransferResult;
+use Phalanx\Grammata\Exception\FilesystemException;
+use Phalanx\Grammata\Task\StatFile;
+use Phalanx\Scope\ExecutionScope;
 use Phalanx\Task\Executable;
 use Phalanx\Task\HasTimeout;
 
@@ -26,7 +28,8 @@ final class ScpTransfer implements Executable, HasTimeout
         private readonly string $to,
         private readonly TransferDirection $direction,
         private readonly ?float $timeoutSeconds = null,
-    ) {}
+    ) {
+    }
 
     public function __invoke(ExecutionScope $scope): TransferResult
     {
@@ -45,9 +48,11 @@ final class ScpTransfer implements Executable, HasTimeout
             $dest,
         ];
 
-        $cmdLine = ProcessAwaiter::buildCommandLine($config->scpBinaryPath, $args);
-
-        [$exitCode, , , $durationMs] = ProcessAwaiter::spawn($cmdLine, $scope);
+        [$exitCode, , , $durationMs] = ProcessAwaiter::spawn(
+            ProcessAwaiter::argv($config->scpBinaryPath, $args),
+            $scope,
+            $this->timeoutSeconds ?? $config->defaultTimeoutSeconds,
+        );
 
         if ($exitCode !== 0) {
             throw new SshException("SCP transfer failed (exit {$exitCode})", $exitCode);
@@ -57,7 +62,11 @@ final class ScpTransfer implements Executable, HasTimeout
             TransferDirection::Upload => $this->from,
             TransferDirection::Download => $this->to,
         };
-        $bytes = file_exists($localFile) ? (int) filesize($localFile) : 0;
+        try {
+            $bytes = $scope->execute(new StatFile($localFile))->size;
+        } catch (FilesystemException) {
+            $bytes = 0;
+        }
 
         [$localPath, $remotePath] = match ($this->direction) {
             TransferDirection::Upload => [$this->from, $this->to],
